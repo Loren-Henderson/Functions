@@ -1,11 +1,14 @@
 using System.Collections.Generic;
+using Microsoft.AspNetCore.Http;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Logging;
+
 
 namespace Mk.Function
 {
@@ -17,10 +20,41 @@ namespace Mk.Function
             [OrchestrationTrigger] IDurableOrchestrationContext context,
             ILogger log)
         {
+            
+            
+            var timeoutCts = new CancellationTokenSource();
+
+            var requestTimeoutAt = context.CurrentUtcDateTime.AddSeconds(60);
+            
+            var timeoutTask = context.CreateTimer(requestTimeoutAt, timeoutCts.Token);
+            
+            var serverReadyTask = context.WaitForExternalEvent<string>("EventCheck");
+            
+            var nextEvent = await Task.WhenAny(timeoutTask, serverReadyTask);
+
+            var outputs = new List<string>();
+            string serverInfo;
+
+             if (nextEvent == serverReadyTask)
+            {
+                // Get server IP:Port from the event body
+                serverInfo = serverReadyTask.Result;
+                log.LogInformation($"serverInfo inside if= '{serverInfo}'" );
+                
+            }
+            else // Timeout happened
+            {
+                serverInfo = "timed out";
+                 log.LogInformation($"timeoutInfo serverInfo= '{serverInfo}'" );
+            }
+
+            if (!timeoutTask.IsCompleted)
+            {
+                log.LogInformation($"About to cancel" );
+                timeoutCts.Cancel();
+            }
 
             
-            var outputs = new List<string>();
-
             // Replace "hello" with the name of your Durable Activity Function.
             outputs.Add(await context.CallActivityAsync<string>("DurableFunctionsOrchestrationTicTacToe_Hello", "Tokyo"));
             outputs.Add(await context.CallActivityAsync<string>("DurableFunctionsOrchestrationTicTacToe_Hello", "Seattle"));
@@ -69,16 +103,25 @@ namespace Mk.Function
             return starter.CreateCheckStatusResponse(req, instanceId);
         }
 
-        // [FunctionName("CallSayHello")]
-        // public static Task<HttpResponseMessage> CheckSayHello (
-        //     [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
-        //     [DurableClient] IDurableOrchestrationClient starter,
-        //     ILogger log)
-        //     {
-        //         var currentStatus = await starter.GetStatusAsync(instanceId, true, false, false);
-        //         log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
-        //         return new HttpResponseMessage();
+        [FunctionName("CallSayHello")]
+        public static async Task<HttpResponseMessage> CheckSayHello (
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+            [DurableClient] IDurableOrchestrationClient starter,
+            ILogger log)
+            {
+                // var currentStatus = await starter.GetStatusAsync(instanceId, true, false, false);
+                // log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
                 
-        //     }
+               
+               // string oId = req.Query["oId"];
+                string name = req.Query["name"];
+                if(!string.IsNullOrEmpty(_testMessage)){
+                    // Leveraging the fact that the orchestrator instance ID is the player GUID
+                    await starter.RaiseEventAsync(_testMessage, "EventCheck", name); 
+                }
+                
+                return new HttpResponseMessage();
+                
+            }
     }
 }
